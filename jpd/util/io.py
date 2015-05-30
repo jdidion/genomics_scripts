@@ -1,6 +1,7 @@
 """
 Utility i/o methods, mostly for reading and writing files.
 """
+from __future__ import absolute_import
 from collections import OrderedDict
 from contextlib import contextmanager
 from csv import reader, writer

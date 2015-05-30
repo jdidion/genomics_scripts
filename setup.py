@@ -1,4 +1,4 @@
-from setuptools import setup, findall
+from setuptools import setup, find_packages, findall
 import os
 
 def find_scripts(script_dir):
@@ -43,7 +43,7 @@ setup(
         'Programming Language :: Python :: 3.4',
     ],
 
-    package_dir = { 'jpd' : 'src' },
+    packages=find_packages(exclude=['scripts']),
     
     scripts=find_scripts('bin/')
 )

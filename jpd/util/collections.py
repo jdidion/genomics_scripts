@@ -1,6 +1,7 @@
 """
 Utility methods related to lists and dicts, and custom collection classes.
 """
+from __future__ import absolute_import
 from collections import OrderedDict, Sequence, defaultdict
 import sys
 from UserDict import UserDict, DictMixin

@@ -90,8 +90,8 @@ def sort(infiles, output, chrm_map, make_fn, cmp_fn):
             seqs[obj.seqname].append(obj)
     
     # write the contents back to a file
-    with open_mgr(output, 'wb'):
-        w = csv.writer(f, delimiter="\t", quotechar="", quoting=csv.QUOTE_NONE, doublequote=False)
+    with open_mgr(output, 'wb') as o:
+        w = csv.writer(o, delimiter="\t", quotechar="", quoting=csv.QUOTE_NONE, doublequote=False)
         for s in sorted(seqs.keys(), compare_seq_names): 
             rows = seqs[s]
             rows.sort(cmp_fn)
