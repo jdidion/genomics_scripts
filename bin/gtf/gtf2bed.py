@@ -6,19 +6,20 @@ import fileinput
 import re
 import sys
 from csv import reader, writer, QUOTE_NONE
+from jpd.util.io import open_mgr
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("-n", "--name_column", type=int, default=None)
     parser.add_argument("-N", "--name_pattern", default=None)
-    parser.add_argument("gtf")
-    parser.add_argument("bed")
+    parser.add_argument("-i", "--gtf", default="-")
+    parser.add_argument("-o", "--bed", default="-")
     args = parser.parse_args()
     
     name_column = args.name_column
     name_pattern = None if args.name_pattern is None else re.compile(args.name_pattern)
     
-    with open(args.bed, 'w') as o:
+    with open_mgr(args.bed, 'w') as o:
         w = writer(o, delimiter="\t", quotechar="", quoting=QUOTE_NONE, doublequote=False)
         for i, row in enumerate(reader(fileinput.input(args.gtf), delimiter="\t")):
             
