@@ -23,6 +23,9 @@
 # is agnostic of the genotype format - if you deviate from the
 # standard A/C/G/T/H/V/D/N encoding, you just need to specify the
 # --missing_chars parameter. This script is no longer stand-alone.
+#
+# 7/12/2015
+# Added ability to read genotypes from PLINK binary files.
 # ----------------------------------------------------------------
 
 from bitarray import bitarray
@@ -33,16 +36,16 @@ import os
 import sys
 import unittest
 
-sys.path.append("%s/lib/python" % os.environ['LAB_HOME'])
-from util.cl import parse
-from util.collections import index_map, Range
+from jpd.util.cl import parse
+from jpd.util.collections import index_map, Range
 
 # ----------------------------------------------------------------
 # Data structures
 # ----------------------------------------------------------------
 
 class SNP(object):
-    def __init__(self, position, alleles, sdp_index):
+    def __init__(self, snpID, position, alleles, sdp_index):
+        self.snpID = snpID
         self.position = position
         self.sdp_index = sdp_index
         self.alleles = alleles
@@ -57,7 +60,7 @@ class SDP:
     def __init__(self, index, hom, missing, mask):
         '''
         Each bitarray whose bits represent presence of the particular call. Each array stores the 
-        call for each strain on this SDP in the order they appear in the Chromosome.strains array.
+        call for each sample on this SDP in sample order.
         
         hom: bitarray of homozygous calls.
         missing: dict in which keys are non-homozygous calls and values are bitarrays.
@@ -83,7 +86,7 @@ class SDP:
 
     def __repr__(self):
         if not hasattr(self, "_repr"):
-            self._repr = ''.join(self.toarray())
+            self._repr = ''.join(str(i) for i in self.toarray())
         return self._repr
     
     def __eq__(self, other):
@@ -93,7 +96,7 @@ class SDP:
         new_missing = dict((k,bitarray(v)) for k,v in self.missing.iteritems())
         return SDP(self.index, bitarray(self.hom), new_missing, bitarray(self.mask))
     
-    def set_strain(self, idx, call):
+    def set_sample(self, idx, call):
         if isinstance(call, int):
             self.hom[idx] = call
             self.mask[idx] = True
@@ -131,13 +134,16 @@ def unify_haplotypes(h1, h2, method="l", collapse_chars=("N",)):
     return tuple(h1)
 
 class Chromosome:
-    def __init__(self, strains, snps, sdps):
-        self.strains = strains
+    def __init__(self, snps, sdps):
         self.snps = snps
         self.sdps = sdps
 
     def num_snps(self):
         return len(self.snps)
+
+    def snp_ids(self, indices):
+        """Returns a tuple with IDs of the SNPs at the specified indices."""
+        return (self.snps[i].snpID for i in indices)
 
     def snp_positions(self, indices):
         """Returns a tuple with the genomic positions of the SNPs at the specified indices."""
@@ -167,7 +173,7 @@ class Chromosome:
     
     def get_unique_haplotypes(self, start_idx=0, end_idx=None, method="c", collapse_chars=("N",)):
         """
-        Returns a map of unique haplotypes to strain indices. When there are two haplotypes that 
+        Returns a map of unique haplotypes to sample indices. When there are two haplotypes that 
         differ only at sites where one haplotype is N, we consider them equal. However, this type 
         of equality is not transitive: there may be two haplotypes that are equal to a third 
         haplotype but not to each other. There are two possible ways of resolving this: 1) convert 
@@ -179,7 +185,7 @@ class Chromosome:
         # flatten each SDP into an array
         sdps = (s.toarray() for s in self.get_all_sdps(start_idx, end_idx)) 
 
-        # transpose SDPs to create haplotypes and map haplotypes to strains
+        # transpose SDPs to create haplotypes and map haplotypes to samples
         hapmap = {}
         for i,h in enumerate(zip(*sdps)):
             h = tuple(h)
@@ -218,7 +224,7 @@ class Chromosome:
 
         return hapmap
     
-    def get_intervals(self, method):
+    def get_intervals(self, method, **kwargs):
         """
         Computes compatible intervals using the specified method and returns an iterable. Valid
         methods are: left, right, uber, cores and maxk.
@@ -227,19 +233,19 @@ class Chromosome:
         # Left-to-right scan. Resulting intervals will not overlap.
         if method in ("left", "cores", "maxk"):
             if not hasattr(self, "left"):
-                self.left = all_scan(self, ltor=True, uber=False)
+                self.left = all_scan(self, ltor=True, uber=False, **kwargs)
             if method == "left": return self.left
             
         # Right-to-left scan. Resulting intervals will not overlap.
         if method in ("right", "cores", "maxk"):
             if not hasattr(self, "right"):
-                self.right = all_scan(self, ltor=False, uber=False)
+                self.right = all_scan(self, ltor=False, uber=False, **kwargs)
             if method == "right": return self.right
         
         # Uber scan (left-to-right with back-scanning). Resulting intervals may overlap.
         if method in ("uber", "maxk"):
             if not hasattr(self, "uber"):
-                self.uber = all_scan(self, ltor=True, uber=True)
+                self.uber = all_scan(self, ltor=True, uber=True, **kwargs)
             if method == "uber": return self.uber
         
         # Core intervals are the intersections of corresponding intervals from left-to-right
@@ -287,25 +293,47 @@ class CompatibleTest(object):
     Perform compatibility tests between SDPs. We only have to test each pair of SDPs once, so 
     we store the results of each test for future use.
     """
-    def __init__(self, snps, sdps):
+    def __init__(self, snps, sdps, max_snps=None, max_size=None, max_spacing=None):
         self.snps = snps
         self.sdps = sdps
-        self.compat_results = {}
+        self.max_snps = max_snps
+        self.max_size = max_size
+        self.max_spacing = max_spacing
+        self._compat_results = {}
     
     def __call__(self, snp_idx1, snp_idx2):
-        sdp_idx1 = self.snps[snp_idx1].sdp_index
-        sdp_idx2 = self.snps[snp_idx2].sdp_index
+        if self.max_snps is not None and abs(snp_idx2 - snp_idx1) + 1 > self.max_snps:
+            return False
+        
+        snp_idx1, snp_idx2 = sorted((snp_idx1, snp_idx2))
+        
+        snp1 = self.snps[snp_idx1]
+        snp2 = self.snps[snp_idx2]
+        
+        if self.max_size is not None and snp2.position - snp1.position + 1 > self.max_size:
+            return False
+        
+        if self.max_spacing is not None and (
+                self.snps[snp_idx1+1].position - snp1.position + 1 > self.max_spacing or (
+                    snp_idx2 - snp_idx1 > 1 and 
+                    snp2.position - self.snps[snp_idx2[1]].position + 1 > self.max_spacing  
+                )
+            ): return False
+        
+        sdp_idx1 = snp1.sdp_index
+        sdp_idx2 = snp2.sdp_index
         
         # identical SDPs are always compatible
         if sdp_idx1 == sdp_idx2:
             return True
         
         key = tuple(sorted((sdp_idx1, sdp_idx2)))
-        if key not in self.compat_results:
+        if key not in self._compat_results:
             sdp1 = self.sdps[sdp_idx1]
             sdp2 = self.sdps[sdp_idx2]
-            self.compat_results[key] = compatible(sdp1, sdp2)
-        return self.compat_results[key]
+            self._compat_results[key] = compatible(sdp1, sdp2)
+
+        return self._compat_results[key]
 
 class Intervals(object):
     """
@@ -335,11 +363,15 @@ class Intervals(object):
         else:
             self.invs.append(Range(self.end - end, self.end - start, (True,True)))
     
-def all_scan(chrm, ltor=True, uber=False):
+def all_scan(chrm, ltor=True, uber=False, **kwargs):
     """
     Identify intervals in which the 4-gamete test succeeds at consecutive SNPs. The ltor flag
     controls whether the scan is left-to-right (True) or right-to-left (False). If the uber flag
     is set, there is a reverse-scan from the end of the previous interval before the forward scan.
+    
+    max_snps: maximum size of an interval in number of SNPs
+    max_size: maximum size of an interval in bp
+    max_spacing: maximum distance between consecutive SNPs in bp
     """
     snps = chrm.snps if ltor else list(reversed(chrm.snps))
     test = CompatibleTest(snps, chrm.sdps)
@@ -500,34 +532,115 @@ def compute_tree(haps, dist_fn=simple_dist):
 
 class InfileReader(object):
     """
-    Read an input file where the first row is a header and two column indices determine
-    which columns will be used: genomic position and first genotype column. The reader stores 
-    the strain list (first row, starting from the first genotype column) and iterates over 
-    subsequent rows. Each row will be returned as a two-element tuple:
-    ( pos, (geno1, geno2, ...) ).
+    Read an input file where the first row is a header and four column indices determine
+    which columns will be used: snpID, chromosome, genomic position and first genotype column. 
+    The reader stores the sample list (first row, starting from the first genotype column) 
+    and iterates over subsequent rows. Each row is returned as a two-element tuple: 
+    ( name, pos, (geno1, geno2, ...) ).
     """
-    def __init__(self, path, delim, columns):
-        self.handle = open(path, 'rU')
-        self.reader = reader(self.handle, delimiter=delim)
-        self.strains = index_map(self.reader.next()[columns[1]:])
-        self._pos_column = columns[0]
-        self._first_geno_column = columns[1]
-        
+    def __init__(self, path, chrm=None, delim=",", columns=(0,1,2,3)):
+        self.chrm = chrm
+        self._handle = open(path, 'rU')
+        self._reader = reader(self.handle, delimiter=delim)
+        self._samples = index_map(self._reader.next()[columns[1]:])
+        self._id_column = columns[0]
+        self._chrm_column = columns[1]
+        self._pos_column = columns[2]
+        self._first_geno_column = columns[3]
+    
+    @property
+    def num_samples(self):
+        return len(self._samples)
+    
+    def has_sample(self, name):
+        return name in self._samples
+    
+    def get_sample_index(self, name):
+        return self._samples[sample]
+    
     def __iter__(self):
         return self
 
     def next(self):
         try:
-            row = self.reader.next()
-            return (int(row[self._pos_column]), row[self._first_geno_column:])
+            row = self._reader.next()
+            while self.chrm is not None and str(row[self._chrm_column]) != self.chrm:
+                row = self._reader.next()
+            return (
+                row[self._id_column], 
+                int(row[self._pos_column]), 
+                row[self._first_geno_column:]
+            )
         except StopIteration:
-            self.handle.close()
+            self.close()
             raise
+    
+    def close(self):
+        self._handle.close()
 
-def parse_input(geno_reader, max_n_frac=1.0, ignore_file=None, missing_chars=('N','H','V','D')):
+class PlinkReader(object):
+    """
+    Iterate over data from PLINK binary files (BED/BIM/FAM). Each row is returned as a 
+    two-element tuple: ( pos, (geno1, geno2, ...) ).
+    """
+    def __init__(self, path, chrm=None, families=None):
+        from plinkio import plinkfile
+        from itertools import izip
+        
+        self.chrm = chrm
+        self.handle = plinkfile.open(path)
+        if not self.handle.one_locus_per_row():
+            raise Exception("This script requires that SNPs are rows and samples columns.")
+        
+        samples = self.handle.get_samples()
+        self._subset_idxs = None
+        if families is not None:
+            families = set(families)
+            self._subset_idxs = set(i for i,sample in enumerate(samples) if sample.fid in families)
+            self._samples = index_map(samples[i].iid for i in self._subset_idxs)
+        
+        else:
+            self._samples = dict((s.iid, s) for s in samples)
+        
+        self._loci = self.handle.get_loci()
+        self._iter = izip(self._loci, self.handle)
+    
+    @property
+    def num_samples(self):
+        return len(self._samples)
+    
+    def has_sample(self, name):
+        return name in self._samples
+    
+    def get_sample_index(self, name):
+        return self._samples[sample]
+        
+    def __iter__(self):
+        return self
+    
+    def next(self):
+        try:
+            locus, genotypes = self._iter.next()
+            while self.chrm is not None and str(locus.chromosome) != self.chrm:
+                locus, genotypes = self._iter.next()
+            if self._subset_idxs is None:
+                genotypes = list(str(g) for g in genotypes)
+            else:
+                genotypes = list(str(g) for i,g in enumerate(genotypes) if i in self._subset_idxs)
+            return (locus.name, locus.bp_position, genotypes)
+        except StopIteration:
+            self.close()
+            raise
+    
+    def close(self):
+        self.handle.close()
+
+def parse_input(geno_reader, min_maf=None, max_n_frac=1.0, ignore_file=None, 
+        het_chars=('H',), missing_chars=('N','V','D')):
     N_char = missing_chars[0]
+    het_chars = set(het_chars)
     missing_chars = set(missing_chars)
-    length = len(geno_reader.strains)
+    length = geno_reader.num_samples
     max_ns = length * max_n_frac
     
     sdp_map = OrderedDict()
@@ -536,42 +649,59 @@ def parse_input(geno_reader, max_n_frac=1.0, ignore_file=None, missing_chars=('N
     num_lines = 0
     not_informative = 0
     too_many_alleles = 0
+    too_few_hom = 0
     too_many_ns = 0
+    too_low_maf = 0
     
     init = '0' * length
     def make_bitarray():
         return bitarray(init)
     
-    for s in geno_reader:
+    for name, pos, genotypes in geno_reader:
         num_lines += 1
-        pos = s[0]
         
         # Determine the A and B alleles. Maintain a bitarray for homozygous alleles where 0=A
         # and 1=B. Also maintain a separate bitarray for each N character.
         homozygous = defaultdict(make_bitarray) # homozygous samples
         missing = defaultdict(make_bitarray) # heterozygous or other samples
+        het_count = 0
+        missing_count = 0
         
-        for i,g in enumerate(s[1]):
-            if g in missing_chars:
+        for i,g in enumerate(genotypes):
+            if g in het_chars:
+                het_count += 1
+                missing[g][i] = True
+            elif g in missing_chars:
+                missing_count += 1 
                 missing[g][i] = True
             else:
                 homozygous[g][i] = True
         
-        if len(missing) > 0:
-            ns = reduce(lambda x,y: x|y, missing.values())
-
-            # skip this SNP if there are too many Ns
-            if ns.count() > max_ns:
-                too_many_ns += 1
-                continue
+        # TODO should probably have an option for min homozygous ratio
+        if len(homozygous) == 0:
+            too_few_hom += 1
+            continue
         
+        if missing_count > max_ns:
+            too_many_ns += 1
+            continue
+        
+        if len(missing) > 0:
             # mask is a bitarray representing the indices of SNPs with homozygous calls
+            ns = reduce(lambda x,y: x|y, missing.values())
             mask = ~ns
         else:
             mask = bitarray('1' * length)
 
-        # order alleles by increasing frequency
+        # compute allele frequency and check MAF
         freq = dict((k, v.count()) for k,v in homozygous.iteritems())
+        if min_maf is not None:
+            maf = float((min(freq.values()) * 2) + het_count) / float(2 * (sum(freq.values()) + het_count))
+            if maf < min_maf:
+                too_low_maf += 1
+                continue
+        
+        # order alleles by increasing frequency
         alleles = sorted(freq.keys(), key=lambda k: freq[k])
         
         if len(alleles) < 2:
@@ -609,11 +739,14 @@ def parse_input(geno_reader, max_n_frac=1.0, ignore_file=None, missing_chars=('N
         else:
             sdp = sdp_map[sdp_key]
         
-        snp = SNP(pos, alleles, sdp.index)
+        snp = SNP(name, pos, alleles, sdp.index)
         snps.append(snp)
     
     logging.info("Total lines: {0}".format(num_lines))
+    logging.info("Too few homozygous: {0}".format(too_few_hom))
     logging.info("Too many N's: {0}".format(too_many_ns))
+    if min_maf is not None:
+        logging.info("MAF < {0}: {1}".format(min_maf, too_low_maf))
     logging.info("Total SNPs: {0}".format(len(snps)))
     logging.info("<2 alleles: {0}".format(not_informative))
     logging.info(">2 alleles: {0}".format(too_many_alleles))
@@ -621,33 +754,34 @@ def parse_input(geno_reader, max_n_frac=1.0, ignore_file=None, missing_chars=('N
     if ignore_file != None:
         with open(ignore_file, 'rU') as ifile:
             for row in reader(ifile):
-                if row[0] not in geno_reader.strains:
+                if not geno_reader.has_sample(row[0]):
                     continue
                 
-                strain_idx = geno_reader.strains[row[0]]
+                sample_idx = geno_reader.get_sample_index(row[0])
                 start = int(row[1])
                 end = int(row[2])
                 call = row[3]
             
-                while s < len(snps):
-                    if snps[s].position > end:
+                for snp in snps:
+                    if snp.position > end:
                         break
-                    elif snps[s].position >= start:
-                        # Make a copy of the SDP, convert the specified strain to the specified
+                    
+                    elif snp.position >= start:
+                        # Make a copy of the SDP, convert the specified sample to the specified
                         # call and update the SNP reference. We don't modify the SDP in place
                         # since other SNPs may reference it.
-                        sdp = sdps[snps[s].sdp_index].deepcopy()
+                        sdp = sdps[snp.sdp_index].deepcopy()
                         sdp.index = num_sdps
-                        sdp.set_strain(strain_idx, call)
+                        sdp.set_sample(sample_idx, call)
                         sdp_key = repr(sdp)
                         if sdp_key not in sdp_map:
                             sdp_map[sdp_key] = sdp
                             num_sdps += 1
                         else:
                             sdp = sdp_map[sdp_key]
-                        snps[s].sdp_index = sdp.index
+                        snp.sdp_index = sdp.index
     
-    return Chromosome(geno_reader.strains, snps, sdp_map.values())
+    return Chromosome(snps, sdp_map.values())
 
 def write_output(chrm, invs, outfile, remove_singletons=False, haplotype_method="c", collapse_chars=("N",),
         write_haplotypes=False, write_trees=False):
@@ -657,7 +791,7 @@ def write_output(chrm, invs, outfile, remove_singletons=False, haplotype_method=
         w = writer(o, delimiter="\t")
         
         header = ["minstart", "minend","midstart", "midend", "maxstart",  "maxend", 
-                  "minsize", "midsize", "maxsize", "nsnps", "nsdps", "nhaps"]
+                  "minsize", "midsize", "maxsize", "nsnps", "snpIDs", "nsdps", "nhaps"]
         if write_haplotypes:
             header.append("haps")
         if write_trees:
@@ -696,6 +830,8 @@ def write_output(chrm, invs, outfile, remove_singletons=False, haplotype_method=
             row.append(mid_rng[1] - mid_rng[0] + 1) # middle_size
             row.append(max_rng[1] - max_rng[0] + 1) # outer_size
             row.append(snp_count)
+            snpIDs = list(chrm.snp_ids((start, end)))
+            row.append(",".join(snpIDs))
             row.append(chrm.count_unique_sdps(start, end))
             row.append(len(haps))
             
@@ -704,7 +840,7 @@ def write_output(chrm, invs, outfile, remove_singletons=False, haplotype_method=
                 
             if write_trees:
                 # append the newick format of the haplotype tree and the set of
-                # strains associated with each branch
+                # samples associated with each branch
                 row.append(compute_tree(haps.keys()))
                 row.append('|'.join(','.join(str(s) for s in g) for g in haps.values()))
             
@@ -715,49 +851,102 @@ def write_output(chrm, invs, outfile, remove_singletons=False, haplotype_method=
 
 if __name__ == "__main__":
     def add_args(parser):
-        parser.add_argument("-c", "--columns", metavar="INDEX", type='int_list', default=[1,2],
-            help="List of two column indicies (0-based): position and first genotype.")
-        parser.add_argument("-d", "--delim", metavar="CHAR", default=",",
-            help="Field delimiter in input and output files.")
-        parser.add_argument("-H", "--haplotype_method", metavar="METHOD", choices=["c","a","l"], default="a",
-            help="Method for identifying unique haplotypes. c=only remove exact duplicates (most "\
-                 "conservative), a=convert Ns to non-N calls (arbitrary), l=convert non-N calls to "\
-                 "Ns (most liberal)")
-        parser.add_argument("-i", "--ignore_file", type="readable_file", metavar="FILE", default=None,
-            help="File containing regions to ignore.")
-        parser.add_argument("-m", "--missing_chars", type="str_list", metavar="LIST", default=("N","H","V","D"),
-            help="List of characters to treat as missing information. The first character should "\
-                 "be the 'no-call' character.")
-        parser.add_argument("-n", "--max_n", metavar="FRACTION", type=float, default=0.2,
-            help="Maximum fraction of N calls for a SNP.")
-        parser.add_argument("-o", "--collapse_missing", action="store_true", default=False,
-            help="Whether to collapse haplotypes that differ only by missing characters. The default is to "\
-                 "collapse only haplotypes that differ by N-calls.")
-        parser.add_argument("-t", "--interval_type", metavar="TYPE", 
-            choices=["left", "right", "cores", "uber", "maxk"], default="maxk", 
-            help="Algorithm for determining intervals.")
-        parser.add_argument("--remove_singletons", action="store_true", default=False,
-            help="Remove single-SNP intervals from output.")
-        parser.add_argument("--write_haplotypes", action="store_true", default=False,
-            help="Write unique haplotypes for each interval to the output file.")
-        parser.add_argument("--write_trees", action="store_true", default=False,
-            help="Compute and output a distance tree for each interval.")
-        parser.add_argument("infile", type="readable_file", metavar="FILE",
+        input_file = parser.add_mutually_exclusive_group(required=True)
+        input_file.add_argument("--infile", type="readable_file", metavar="FILE", default=None,
             help="File contaning genotypes.")
-        parser.add_argument("outfile", type="writeable_file", metavar="FILE",
+        input_file.add_argument("--bfile", metavar="PATH", default=None,
+            help="PLINK binary file prefix.")
+        parser.add_argument("--outfile", type="writeable_file", metavar="FILE",
             help="Output file.")
+        parser.add_argument("--columns", metavar="INDEX", type='int_list', default=[0,1,2,3],
+            help="List of four column indicies (0-based): snpID, chromosome, position and first " \
+                 "genotype. Only used with --infile. (default=(0,1,2,3))")
+        parser.add_argument("--delim", metavar="CHAR", default=",",
+            help="Field delimiter in input and output files. (default=',')")
+        parser.add_argument("--chrm", metavar="CHRM", default=None,
+            help="Chromosome to process. Required if there is more than one chromosome in the input file.")
+        parser.add_argument("--families", type="str_list", metavar="LIST", default=None,
+            help="Comma-delimited list of family IDs to keep (only used with --bfile).")
+        parser.add_argument("--haplotype-method", metavar="METHOD", choices=["c","a","l"], default="a",
+            help="Method for identifying unique haplotypes. c=only collapse exact duplicates (most "\
+                 "conservative), a=convert Ns to non-N calls (arbitrary), l=convert non-N calls to "\
+                 "Ns (most liberal). (default=a)")
+        parser.add_argument("--het", type="str_list", metavar="LIST", default=("H",),
+            help="List of characters to treat as heterozygous.")
+        parser.add_argument("--ignore-file", type="readable_file", metavar="FILE", default=None,
+            help="File containing regions to ignore.")
+        parser.add_argument("--interval-type", metavar="TYPE", 
+            choices=["left", "right", "cores", "uber", "maxk"], default="maxk", 
+            help="Algorithm for determining intervals. (default=maxk)")
+        parser.add_argument("--missing-chars", type="str_list", metavar="LIST", default=("N","V","D"),
+            help="List of characters to treat as missing information. The first character should "\
+                 "be the 'no-call' character. If using a plink file (-b), this will be set to (3,1).")
+        parser.add_argument("--maf", type=float, metavar="MAF", default=None,
+            help="Minimum minor allele frequency of SNPs to include in analysis.")
+        parser.add_argument("--max-n", metavar="FRACTION", type=float, default=0.1,
+            help="Maximum fraction of N calls for a SNP. (default=0.2)")
+        parser.add_argument("--max-snps", type="int_fmt", metavar="SNPS", default=None,
+            help="Maximum number of SNPs that an interval can span.")
+        parser.add_argument("--max-size", type="int_fmt", metavar="BP", default=None,
+            help="Maximum size of an interval in bp.")
+        parser.add_argument("--max-spacing", type="int_fmt", metavar="BP", default=None,
+            help="Maximum distance between consecutive SNPs in the same interval.")
+        parser.add_argument("--collapse-missing", action="store_true", default=False,
+            help="Collapse haplotypes that differ only by missing characters. The default is to "\
+                 "collapse only haplotypes that differ by N-calls.")
+        parser.add_argument("--remove-singletons", action="store_true", default=False,
+            help="Remove single-SNP intervals from output.")
+        parser.add_argument("--write-haplotypes", action="store_true", default=False,
+            help="Write unique haplotypes for each interval to the output file.")
+        parser.add_argument("--write-trees", action="store_true", default=False,
+            help="Compute and output a distance tree for each interval.")
             
     ns = parse(add_args)
     
     logging.debug("Parsing input file")
-    reader = InfileReader(ns.infile, ns.delim, ns.columns)
-    chrm = parse_input(reader, ns.max_n, ns.ignore_file, ns.missing_chars)
+    
+    if ns.infile is not None:
+        reader = InfileReader(ns.infile, ns.chrm, ns.delim, ns.columns)
+        het = ns.het
+        missing = ns.missing_chars
+    else:
+        reader = PlinkReader(ns.bfile, ns.chrm, ns.families)
+        het = ('1',)
+        missing = ('3',)
+    maf = ns.maf
+    if maf is not None and maf <= 0:
+        maf = None
+    chrm = parse_input(reader, maf, ns.max_n, ns.ignore_file, het, missing)
+    
+    max_snps = ns.max_snps
+    num_snps = len(chrm.snps)
+    if max_snps is None:
+        max_snps = num_snps
+    else:
+        assert max_snps <= num_snps
+    
+    max_size = ns.max_size
+    chrm_size = chrm.snps[-1].position - chrm.snps[0].position + 1
+    if max_size is None:
+        max_size = chrm_size
+    else:
+        assert ns.max_size <= chrm_size
+    
+    max_spacing = ns.max_spacing
+    if max_spacing is None:
+        max_spacing = max_size - 1
+    else:
+        assert max_spacing < max_size
     
     logging.debug("Computing intervals")
-    invs = chrm.get_intervals(ns.interval_type)
+    
+    invs = chrm.get_intervals(ns.interval_type, 
+        max_snps=max_snps, max_size=max_size, max_spacing=max_spacing)
+    
     logging.info("Number of intervals: {0}".format(len(invs)))
     
     logging.debug("Writing output")
+    
     if ns.write_trees:
         # This is a hack to avoid warnings from PyCogent about not having MPI enabled
         import warnings
@@ -765,10 +954,11 @@ if __name__ == "__main__":
             warnings.simplefilter("ignore")
             from cogent.phylo import nj
     
-    if args.collapse_missing:
-        collapse_chars = ns.missing_chars
+    if ns.collapse_missing:
+        collapse_chars = missing + het
     else:
-        collapse_chars = (ns.missing_chars[0],)
+        collapse_chars = (missing[0],)
+    
     write_output(chrm, invs, ns.outfile, ns.remove_singletons, ns.haplotype_method, 
         collapse_chars, ns.write_haplotypes, ns.write_trees)
 
@@ -777,7 +967,7 @@ class MockReader(object):
         self.rows = rows
         if header is None:
             header = (str(x) for x in xrange(0, len(rows[0][1])))
-        self.strains = index_map(header)
+        self.samples = index_map(header)
         
     def __iter__(self):
         return iter(self.rows)

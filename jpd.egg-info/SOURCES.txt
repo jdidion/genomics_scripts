@@ -1,3 +1,4 @@
+setup.py
 bin/bed/bed2gtf.py
 bin/bed/make_bed.py
 bin/bed/split_bed.py
@@ -13,14 +14,18 @@ bin/geno/compatible_intervals.py
 bin/geno/zygosity_intervals.py
 bin/gtf/gtf2bed.py
 bin/gtf/make_gtf.py
+bin/junctions/junc2bed.py
+bin/junctions/merge_junctions.py
 bin/misc/exec.py
 bin/misc/exec_sql.py
+bin/misc/grep_column.py
 bin/misc/move.py
 bin/misc/search_replace.py
 bin/misc/split_file.py
 bin/phylip/seq_to_snps.py
 bin/plink/plink.py
 bin/plink/plink_ld.py
+bin/sam/binbam.py
 bin/sam/count_starts.py
 bin/sam/fix_flags.py
 bin/seq/cuts_in_fragments.py

@@ -4,6 +4,7 @@ Simplified and enhanced interface to optparse, as well as validation methods.
 from argparse import ArgumentParser, FileType, ArgumentError, _AppendAction
 import operator
 import os
+import re
 from ConfigParser import ConfigParser
 
 from .collections import charrange, PropDict
@@ -74,9 +75,9 @@ def parse(add_func=None, version=None, unprocessed=None, auto_logging=True, args
     if auto_logging:
         extend_logging()
         parser.add_argument("--log_level", metavar="LEVEL", default="WARNING",
-            choices=get_level_names(), help="Logger level.")
+            choices=get_level_names(), help="Logger level (default=WARNING)")
         parser.add_argument("--log_file", type="writeable_file", metavar="FILE",
-            help="File where log messages should be written.")
+            help="File where log messages should be written (default=stdout)")
 
     if version is not None:
         parser.add_argument("--version", action="version", version=version)
@@ -382,6 +383,24 @@ def read_property_file(f, defaults=None):
     config.read(readable_file(f))
     return config
 
+int_fmt_re = re.compile("([\d\.]+)([KkMmGg]?)")
+def int_fmt(s):
+    """Similar to int(), but accepts K, M, and G abbreviations"""
+    m = int_fmt_re.match(s)
+    num, mult = m.groups()
+    num = float(num)
+    if mult is not None:
+        mult = mult.lower()
+        if mult == "k":
+            num *= 1000
+        elif mult == "m":
+            num *= 1000000
+        elif mult == "g":
+            num *= 1000000000
+        else:
+            raise Exception("Unsupported multiplier {0}".format(mult))
+    return int(num)
+
 def positive(inclusive=False):
     """Test that a number is greater than (or equal to, if ``inclusive=True``) zero."""
     return ge(0) if inclusive else gt(0)
@@ -415,6 +434,7 @@ _types = dict(
     property_file=read_property_file,
     pos_int=positive(),
     non_neg_int=positive(True),
+    int_fmt=int_fmt,
     # these require the use of the dict action
     mapping=mapping(),
     delimited_mapping=delimited_mapping,
