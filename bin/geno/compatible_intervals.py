@@ -143,7 +143,7 @@ class Chromosome:
 
     def snp_ids(self, indices):
         """Returns a tuple with IDs of the SNPs at the specified indices."""
-        return (self.snps[i].snpID for i in indices)
+        return (self.snps[i].snpID for i in xrange(indices[0], indices[1]+1))
 
     def snp_positions(self, indices):
         """Returns a tuple with the genomic positions of the SNPs at the specified indices."""
