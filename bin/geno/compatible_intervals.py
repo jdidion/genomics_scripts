@@ -578,63 +578,6 @@ class InfileReader(object):
     def close(self):
         self._handle.close()
 
-class PlinkReader(object):
-    """
-    Iterate over data from PLINK binary files (BED/BIM/FAM). Each row is returned as a 
-    two-element tuple: ( pos, (geno1, geno2, ...) ).
-    """
-    def __init__(self, path, chrm=None, families=None):
-        from plinkio import plinkfile
-        from itertools import izip
-        
-        self.chrm = chrm
-        self.handle = plinkfile.open(path)
-        if not self.handle.one_locus_per_row():
-            raise Exception("This script requires that SNPs are rows and samples columns.")
-        
-        samples = self.handle.get_samples()
-        self._subset_idxs = None
-        if families is not None:
-            families = set(families)
-            self._subset_idxs = set(i for i,sample in enumerate(samples) if sample.fid in families)
-            self._samples = index_map(samples[i].iid for i in self._subset_idxs)
-        
-        else:
-            self._samples = dict((s.iid, s) for s in samples)
-        
-        self._loci = self.handle.get_loci()
-        self._iter = izip(self._loci, self.handle)
-    
-    @property
-    def num_samples(self):
-        return len(self._samples)
-    
-    def has_sample(self, name):
-        return name in self._samples
-    
-    def get_sample_index(self, name):
-        return self._samples[sample]
-        
-    def __iter__(self):
-        return self
-    
-    def next(self):
-        try:
-            locus, genotypes = self._iter.next()
-            while self.chrm is not None and str(locus.chromosome) != self.chrm:
-                locus, genotypes = self._iter.next()
-            if self._subset_idxs is None:
-                genotypes = list(str(g) for g in genotypes)
-            else:
-                genotypes = list(str(g) for i,g in enumerate(genotypes) if i in self._subset_idxs)
-            return (locus.name, locus.bp_position, genotypes)
-        except StopIteration:
-            self.close()
-            raise
-    
-    def close(self):
-        self.handle.close()
-
 def parse_input(geno_reader, min_maf=None, max_n_frac=1.0, ignore_file=None, 
         het_chars=('H',), missing_chars=('N','V','D')):
     N_char = missing_chars[0]
@@ -910,6 +853,7 @@ if __name__ == "__main__":
         het = ns.het
         missing = ns.missing_chars
     else:
+        from jpd.gnet.plink import PlinkReader
         reader = PlinkReader(ns.bfile, ns.chrm, ns.families)
         het = ('1',)
         missing = ('3',)
