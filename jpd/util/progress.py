@@ -1,5 +1,5 @@
 try:
-    from progressbar import ProgressBar, Widget, Percentage, Bar, ETA
+    from progressbar import ProgressBar, Widget, Percentage, Bar, ETA, AnimatedMarker, Counter
     available = True
 except ImportError:
     available = False
@@ -15,7 +15,7 @@ class Status(Widget):
     def update(self, pbar):
         return self.value or ""
 
-def default_progress(name=None, maxval=None, status=False):
+def default_widgets(name, status):
     widgets = []
     if status:
         status = Status()
@@ -25,8 +25,21 @@ def default_progress(name=None, maxval=None, status=False):
         widgets.extend((name, ": "))
     elif status:
         widgets.extend((status, ": "))
+    return widgets
+
+def default_progress(name=None, maxval=None, status=False):
+    widgets = defaut_widgets(name, status)
     widgets.extend((Percentage(), " ", Bar(), " ", ETA()))
     
     progress = MyProgressBar(maxval=maxval, widgets=widgets)
     progress.status = status
     return progress
+
+def infinite_progress(name=None, status=False):
+    widgets = defaut_widgets(name, status)
+    widgets.extend(Counter(), " ", AnimatedMarker())
+    
+    progress = MyProgressBar(widgets=widgets)
+    progress.status = status
+    return progress
+    
