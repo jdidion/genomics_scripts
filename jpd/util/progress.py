@@ -11,7 +11,10 @@ class MyProgressBar(ProgressBar):
 class Status(Widget):
     def __init__(self, value=None):
         self.value = value
-        
+    
+    def __call__(self, value):
+        self.value = value
+    
     def update(self, pbar):
         return self.value or ""
 
