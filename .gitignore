@@ -1,4 +1,5 @@
 *.pyc
 build/
 dist/
-jpd.egg-info/
+jpd.egg-info/*
+.DS_Store
