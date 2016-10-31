@@ -2,7 +2,7 @@
 
 import logging
 import sys
-from .misc import ExcInfo, bash
+from .misc import bash
 
 def make_pool(threads=None):
     from multiprocessing import Pool, cpu_count
@@ -138,6 +138,35 @@ def reraise_error(result):
 def log_error(result):
     """Error handler that logs errors."""
     logging.error('Error for args %s' % str(result[0]), exc_info=result[1].exc_info)
+
+class ExcInfo(object):
+    """Wrapper class for exception info tuple."""
+    def __init__(self, exc_info=None, safe=False):
+        if exc_info is None:
+            exc_info = sys.exc_info()
+        self.exc_info = exc_info
+        # exception tracebacks are not pickle-able, so if we want this ExcInfo to
+        # be safe (i.e. pickleable), we need to delete the traceback
+        if safe:
+            self.exc_info.trace = None
+
+    def __repr__(self):
+        return str(self.exc_info)
+
+    @property
+    def exc_class(self):
+        return self.exc_info[0]
+
+    @property
+    def exc_obj(self):
+        return self.exc_info[1]
+
+    @property
+    def exc_trace(self):
+        return self.exc_info[2]
+
+    def reraise(self):
+        raise self.exc_info[0], self.exc_info[1], self.exc_info[2]
 
 # executors for command-line processes
 
