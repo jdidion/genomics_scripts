@@ -7,6 +7,32 @@ import re
 from xphyle.compression import *
 from xphyle.paths import splitext
 
+# Support other popular archive formats
+# * 7zip archives: this is problematic as it depends on 7zip being installed, with no pure python fallback
+# * Consider using libarchive (if installed) via one of the several available python packages. Will have to do performance testing to determine whether this should be the first option or the second to try.
+# * Which others? arc, cab (windows-specific), dmg (mac-specific), iso9660, lzh, rar, xar, zz
+
+def write_archive(path : 'str', contents, **kwargs):
+    """Write entries to a compressed archive file.
+
+    Args:
+        path (str): Path of the archive file to write.
+        contents (iterable): A dict or an iterable of (name, content) tuples.
+          A content item can be a path to a readable file to be added
+          to the archive.
+        kwargs: Additional args to `open_archive_writer`.
+    """
+    if isinstance(contents, dict):
+        contents = dict.items()
+    with open_archive_writer(path, **kwargs) as c:
+        for name, content in contents:
+            if os.path.isfile(content):
+                c.writefile(content, name)
+            else:
+                c.writestr(content, name)
+
+Some useful FileEventListeners
+
 archive_formats = {}
 """Dict of registered archive formats"""
 

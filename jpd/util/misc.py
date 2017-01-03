@@ -46,3 +46,26 @@ def bash(command, catch=True, safe=False, **popen_kwargs):
             popen_kwargs["stdout"].close()
         if "stderr" in popen_kwargs and hasattr(popen_kwargs["stderr"], "close"):
             popen_kwargs["stderr"].close()
+
+@contextmanager
+def buffer_string(value : 'str' = None):
+    """Make creation and usage of a string buffer compatible with
+    ``Popen.wait``.
+    
+    Args:
+        value: String value to assign to the buffer
+    
+    Yields:
+        io.StringIO wrapping ``value``
+    """
+    b = io.StringIO(value)
+    try:
+        yield b
+    finally:
+        b.close()
+
+def load_module_from_file(path : 'str'):
+    """Load a python module from a file.
+    """
+    loader = importlib.machinery.SourceFileLoader(filename(path), path)
+    return loader.load_module()
