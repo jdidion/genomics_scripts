@@ -167,15 +167,16 @@ def sort_gff(reader, output, chrm_map):
     file_headers = OrderedDict()
     chrm_headers = {}
     for line in reader:
-        if line[0].startswith('##'):
-            chrm = sequence_region_re.match(line[0]).group(1)
-            if chrm in chrm_map:
-                chrm = chrm_map[chrm]
-            chrm_headers[chrm] = line[0]
-        elif line[0].startswith('#'):
-            file_headers[line[0]] = None
+        if line[0].startswith('#'):
+            match = sequence_region_re.match(line[0])
+            if match:
+                chrm = match.group(1)
+                if chrm_map and chrm in chrm_map:
+                    chrm = chrm_map[chrm]
+                chrm_headers[chrm] = line[0]
+            else:
+                file_headers[line[0]] = None
         else:
-            assert len(line) >= 3, "BED file must have at least 3 columns"
             line = map_chrm(line, 0, chrm_map)
             if not line:
                 continue
@@ -184,13 +185,14 @@ def sort_gff(reader, output, chrm_map):
     
     # write the contents back to a file
     with open_(output, 'w') as o:
-        for line in file_headers:
-            o.write(line)
         w = csv.writer(o, delimiter="\t", quotechar="", quoting=csv.QUOTE_NONE,
                        doublequote=False)
-        for s in sorted(seqs.keys()):
-            if s in chrm_headers:
-                o.write(chrm_headers[s])
+        for line in file_headers.keys():
+            w.writerow([line])
+        for s in tqdm(sorted(seqs.keys()), desc="Sorting and writing rows...",
+                      total=len(seqs)):
+            if s.seqname in chrm_headers:
+                w.writerow([chrm_headers[s.seqname]])
             rows = seqs[s]
             rows.sort()
             w.writerows(r.row for r in rows)
@@ -222,7 +224,8 @@ def sort_bed(reader, output, chrm_map):
     with open_(output, 'w') as o:
         w = csv.writer(o, delimiter="\t", quotechar="", quoting=csv.QUOTE_NONE,
                        doublequote=False)
-        for s in sorted(seqs.keys()):
+        for s in tqdm(sorted(seqs.keys()), desc="Sorting and writing rows...",
+                      total=len(seqs)):
             rows = seqs[s]
             rows.sort()
             w.writerows(r.row for r in rows)
@@ -289,7 +292,8 @@ def sort_sam(reader, outfile, header=None, chrm_map=None):
             sam = Sam(row)
             seqs[sam.seqname].append(sam)
         
-        for s in sorted(seqs.keys()):
+        for s in tqdm(sorted(seqs.keys()), desc="Sorting and writing rows...",
+                      total=len(seqs)):
             rows = seqs[s]
             rows.sort(compare_sam_rows)
             w.writerows(r.row for r in rows)
@@ -375,7 +379,7 @@ if __name__ == '__main__':
         else:
             chrm_map = dict(l)
     
-    reader = tqdm(read_delimited(fileinput(args.infiles)))
+    reader = tqdm(read_delimited(fileinput(args.infiles)), desc="Reading rows...")
     
     if args.filter_only:
         filter_sam(reader, args.output, chrm_map)
