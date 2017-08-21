@@ -1,1 +1,1 @@
-# jpd
+These are some commonly used functions, and scripts bulit on those functions, that I have developed over the past ~10 years. Nothing here is guaranteed to work, and I probaby won't address any issues or respond to support requests. I am sharing these primarily as a starting point for others, but make sure you review the code for correctness before you use it, and be prepared to do some debugging to get them to work. User beware!
